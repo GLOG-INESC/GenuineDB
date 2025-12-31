@@ -1,0 +1,129 @@
+#pragma once
+
+#include <glog/logging.h>
+
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "common/batch_log.h"
+#include "common/configuration.h"
+#include "common/metrics.h"
+#include "common/types.h"
+#include "connection/broker.h"
+#include "connection/sender.h"
+#include "module/scheduler_components/txn_holder.h"
+#include "module/scheduler_components/worker.h"
+#include "storage/storage.h"
+
+#if defined(REMASTER_PROTOCOL_SIMPLE)
+#include "module/scheduler_components/simple_remaster_manager.h"
+#if !defined(LOCK_MANAGER_OLD)
+#error "SIMPLE remaster protocol is only compatible with OLD lock manager"
+#endif
+#elif defined(REMASTER_PROTOCOL_PER_KEY)
+#include "module/scheduler_components/per_key_remaster_manager.h"
+#if !defined(LOCK_MANAGER_OLD)
+#error "PER_KEY remaster protocol is only compatible with OLD lock manager"
+#endif
+#elif defined(REMASTER_PROTOCOL_COUNTERLESS) && defined(LOCK_MANAGER_OLD)
+#error "COUNTERLESS remaster protocol is not compatible with OLD lock manager"
+#endif
+
+#if defined(LOCK_MANAGER_OLD)
+#include "module/scheduler_components/old_lock_manager.h"
+#elif defined(LOCK_MANAGER_DDR_OPTIMISTIC)
+#include "module/scheduler_components/ddr_lock_manager.h"
+#else
+#include "module/scheduler_components/rma_lock_manager.h"
+#endif
+
+namespace slog {
+
+class Scheduler : public NetworkedModule {
+ public:
+  Scheduler(const std::shared_ptr<Broker>& broker, const std::shared_ptr<Storage>& storage,
+            const MetricsRepositoryManagerPtr& metrics_manager,
+            std::chrono::milliseconds poll_timeout = kModuleTimeout);
+
+  std::string name() const override { return "Scheduler"; }
+
+ protected:
+  void Initialize() final;
+
+  void OnInternalRequestReceived(EnvelopePtr&& env) final;
+
+  // Handle responses from the workers
+  bool OnCustomSocket() final;
+
+ private:
+  void ProcessTransaction(EnvelopePtr&& env);
+  void ProcessStatsRequest(const internal::StatsRequest& stats_request);
+
+#if defined(REMASTER_PROTOCOL_SIMPLE) || defined(REMASTER_PROTOCOL_PER_KEY)
+  // Send single-home and lock-only transactions for counter checking
+  void SendToRemasterManager(Transaction& txn);
+  // Send transactions to lock manager or abort them
+  void ProcessRemasterResult(RemasterOccurredResult result);
+#endif
+
+  // Send all transactions for locks
+  void SendToLockManager(Transaction& txn);
+
+  /**
+   * Sends txn to worker
+   * @param txn_id id of txn to send
+   * @param deadlocked whether the txn was in a resolved deadlock
+   * @param is_fast set to true if this txn does not have to wait for any lock
+   */
+  void Dispatch(TxnId txn_id, bool deadlocked, bool is_fast);
+
+  /**
+   * Releases the locks of a finished txn
+   * @param txn_id id of the finished txn
+   */
+  void UnblockTransactions(TxnId txn_id);
+  /**
+   * Aborts
+   *
+   * Once a transaction is sent to a worker, the worker will manage an abort.
+   * If a remaster abort occurs at this partition or if a remote read abort
+   * is received before the transaction is dispatched, then the abort is handled
+   * here.
+   *
+   * Before the transaction data is erased, we wait to collect all lock-onlys of a multi-home txn
+   */
+  void TriggerPreDispatchAbort(TxnId txn_id, const std::string& abort_reason = "");
+
+  void MaybeCleanUpTxn(TxnId txn_id);
+
+#if defined(REMASTER_PROTOCOL_SIMPLE)
+  SimpleRemasterManager remaster_manager_;
+#elif defined(REMASTER_PROTOCOL_PER_KEY)
+  PerKeyRemasterManager remaster_manager_;
+#endif
+
+#if defined(REMASTER_PROTOCOL_SIMPLE) || defined(REMASTER_PROTOCOL_PER_KEY) || \
+    (defined(LOCK_MANAGER_OLD) && !defined(REMASTER_PROTOCOL_COUNTERLESS))
+  OldLockManager lock_manager_;
+#elif defined(LOCK_MANAGER_DDR_OPTIMISTIC)
+  DDRLockManager lock_manager_;
+#else
+  RMALockManager lock_manager_;
+#endif
+
+  string scheduler_debug_tag_;
+
+  std::unordered_map<TxnId, TxnHolder> active_txns_;
+
+  // This must be defined at the end so that the workers exit before any resources
+  // in the scheduler is destroyed
+  std::vector<std::unique_ptr<ModuleRunner>> workers_;
+  int current_worker_;
+
+  int64_t global_log_counter_;
+  SharderPtr sharder_;
+
+};
+
+}  // namespace slog

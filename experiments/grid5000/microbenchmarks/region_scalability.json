@@ -1,0 +1,59 @@
+{
+  "ycsb-zipf": {
+    "servers": [
+      {
+        "config": "grid5000/microbenchmarks/glog.conf",
+        "image": "jrafaelsoares/geozip_image",
+        "binary": "global_log",
+        "build_dir": "glog",
+        "system": "GLOG",
+        "replication": "PARTIAL",
+        "execution": "PARTIAL",
+        "server_reset": true
+      },
+      {
+        "config": "grid5000/microbenchmarks/slog.conf",
+        "image": "jrafaelsoares/geozip_image",
+        "binary": "slog",
+        "build_dir": "slog",
+        "system": "SLOG",
+        "replication": "PARTIAL",
+        "execution": "PARTIAL",
+        "server_reset": true
+      },
+      {
+        "config": "grid5000/microbenchmarks/detock_pr.conf",
+        "image": "jrafaelsoares/geozip_image",
+        "binary": "slog",
+        "build_dir": "detock",
+        "system": "DETOCK",
+        "replication": "PARTIAL",
+        "execution": "PARTIAL",
+        "server_reset": true
+      },
+      {
+        "config": "grid5000/microbenchmarks/tiga.conf",
+        "image": "jrafaelsoares/geozip_image",
+        "binary": "tiga",
+        "build_dir": "tiga",
+        "system": "TIGA",
+        "replication": "PARTIAL",
+        "execution": "PARTIAL",
+        "server_reset": true
+      }
+    ],
+    "workload": "ycsb",
+    "txn_issuing_delay" : [0],
+    "jitter": [1],
+    "jitter_constant": true,
+    "duration": 70,
+    "clients": [1024, 2048, 4096, 8192, 16384],
+    "generators": [16],
+    "zipf": [0.75],
+    "mh": [10],
+    "mix": ["50_0_50"],
+    "fi" : [0],
+    "mh_zipf": [0],
+    "num_regions" : [2, 4, 8, 16, 32]
+  }
+}

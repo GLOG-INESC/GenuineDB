@@ -1,0 +1,13 @@
+#pragma once
+
+#include "execution/tpcc/constants.h"
+#include "execution/tpcc/storage_adapter.h"
+
+namespace slog {
+namespace tpcc {
+
+void LoadTables(const StorageAdapterPtr& storage_adapter, int W, int num_regions, int num_partitions, int partition, int region,
+                int num_threads = 3);
+
+}  // namespace tpcc
+}  // namespace slog

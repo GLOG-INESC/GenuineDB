@@ -1,0 +1,34 @@
+{
+    "configs": {
+        "InstanceType": "r5.4xlarge",
+        "ZipOrderedRegion": "us-east-1"
+    },
+    "default": {
+        "IamFleetRole": "arn:aws:iam::975305815341:role/aws-ec2-spot-fleet-role",
+        "AllocationStrategy": "capacityOptimized",
+        "TargetCapacity": 2,
+        "OnDemandTargetCapacity": 2,
+        "TerminateInstancesWithExpiration": true,
+        "Type": "request"
+    },
+    "us-east-1": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-0aae5b39fc3d4de77",
+                    "Version": "2"
+                }
+            }
+        ]
+    },
+    "us-east-2": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-063faa965288e29a1",
+                    "Version": "2"
+                }
+            }
+        ]
+    }
+}

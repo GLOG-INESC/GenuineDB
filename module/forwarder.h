@@ -1,0 +1,97 @@
+#pragma once
+
+#include <random>
+#include <unordered_map>
+
+#include "common/configuration.h"
+#include "common/metrics.h"
+#include "common/rolling_window.h"
+#include "common/sharder.h"
+#include "common/types.h"
+#include "connection/broker.h"
+#include "module/base/networked_module.h"
+#include "proto/transaction.pb.h"
+#include "storage/lookup_master_index.h"
+#include "storage/metadata_initializer.h"
+
+namespace slog {
+
+struct PendingBatch {
+  PendingBatch(int lookups, EnvelopePtr env):
+    lookups(lookups), env(move(env)) {};
+
+  int lookups;
+  EnvelopePtr env;
+};
+/**
+ * A Forwarder determines the type of a transaction (single-home vs. multi-home)
+ * then forwards it to the appropriate module.
+ *
+ * To determine the type of a txn, it sends LookupMasterRequests to other Forwarder
+ * modules in the same region and aggregates the responses.
+ *
+ * INPUT:  ForwardTransaction and LookUpMasterRequest
+ *
+ * OUTPUT: If the txn is single-home, forward to the Sequencer in its home region.
+ *         If the txn is multi-home, forward to the MultiHomeOrderer for ordering;
+ *         if bypass_mh_orderer is set to true in the config, the multi-home txn is
+ *         sent directly to the involved regions.
+ *
+ *         For LookUpMasterRequest, a LookUpMasterResponse is sent back to
+ *         the requester.
+ */
+class Forwarder : public NetworkedModule {
+ public:
+  Forwarder(const std::shared_ptr<zmq::context_t>& context, const ConfigurationPtr& config,
+            const std::shared_ptr<LookupMasterIndex>& lookup_master_index,
+            const std::shared_ptr<MetadataInitializer>& metadata_initializer,
+            const MetricsRepositoryManagerPtr& metrics_manager,
+            std::chrono::milliseconds poll_timeout_ms = kModuleTimeout);
+
+  std::string name() const override { return "Forwarder"; }
+
+ protected:
+  void Initialize() final;
+  void OnInternalRequestReceived(EnvelopePtr&& env) final;
+  void OnInternalResponseReceived(EnvelopePtr&& env) final;
+
+ private:
+  void ScheduleNextLatencyProbe();
+  void ProcessForwardTxn(EnvelopePtr&& env);
+  void ProcessForwardBatch(EnvelopePtr&& env);
+  void ProcessLookUpMasterRequest(EnvelopePtr&& env);
+  void ProcessStatsRequest(const internal::StatsRequest& stats_request);
+
+  void SendLookupMasterRequestBatch();
+
+  void UpdateMasterInfo(EnvelopePtr&& env);
+  void UpdateLatency(EnvelopePtr&& env);
+
+  /**
+   * Pre-condition: transaction type is not UNKNOWN
+   */
+  void Forward(EnvelopePtr&& env);
+  void ForwardBatch(EnvelopePtr&& env);
+
+  // Helper function to create new batch envelopes
+  EnvelopePtr NewBatch(uint64_t slots, ClientId client_id, uint64_t sent_batches);
+
+  const SharderPtr sharder_;
+  std::shared_ptr<LookupMasterIndex> lookup_master_index_;
+  std::shared_ptr<MetadataInitializer> metadata_initializer_;
+  std::unordered_map<TxnId, EnvelopePtr> pending_transactions_;
+  std::vector<internal::Envelope> partitioned_lookup_request_;
+  int batch_size_;
+  std::vector<RollingWindow<int64_t>> latencies_ns_;
+  std::chrono::steady_clock::time_point batch_starting_time_;
+
+  std::unordered_map<long, PendingBatch> pending_batches_;
+  std::unordered_map<TxnId, long> pending_batches_txns_;
+
+  long batch_lookups_ = 0;
+
+  std::mt19937 rg_;
+
+};
+
+}  // namespace slog

@@ -1,0 +1,55 @@
+{
+  "tpcc": {
+    "servers": [
+      {
+        "config": "aws/glog.conf",
+        "image": "jrafaelsoares/geozip_image",
+        "binary": "global_log",
+        "build_dir": "glog_pr",
+        "system": "GLOG",
+        "replication": "PARTIAL",
+        "execution": "PARTIAL",
+        "server_reset": true
+      },
+      {
+        "config": "aws/detock_pr.conf",
+        "image": "jrafaelsoares/geozip_image",
+        "binary": "slog",
+        "build_dir": "detock_pr_opt",
+        "system": "DETOCK",
+        "replication": "PARTIAL",
+        "execution": "PARTIAL",
+        "server_reset": true
+      },
+      {
+        "config": "aws/slog.conf",
+        "image": "jrafaelsoares/geozip_image",
+        "binary": "slog",
+        "build_dir": "slog_pr",
+        "system": "SLOG",
+        "replication": "PARTIAL",
+        "execution": "PARTIAL",
+        "server_reset": true
+      },
+      {
+        "config": "aws/tiga.conf",
+        "image": "jrafaelsoares/geozip_image",
+        "binary": "tiga",
+        "build_dir": "tiga_pr",
+        "system": "TIGA",
+        "replication": "PARTIAL",
+        "execution": "PARTIAL",
+        "server_reset": true
+      }
+    ],
+    "workload": "tpcc",
+    "jitter": [1],
+    "jitter_constant": true,
+    "duration": 70,
+    "clients": [512, 256],
+    "generators": [16],
+    "sh_only": 0,
+    "mh_zipf": 1,
+    "warehouses": [8]
+  }
+}

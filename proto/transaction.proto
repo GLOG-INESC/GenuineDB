@@ -1,0 +1,213 @@
+syntax = "proto3";
+package slog;
+
+enum TransactionType {
+    UNKNOWN = 0;
+    SINGLE_HOME = 1;
+    MULTI_HOME_OR_LOCK_ONLY = 2;
+}
+
+enum TransactionStatus {
+    NOT_STARTED = 0;
+    COMMITTED = 1;
+    ABORTED = 2;
+}
+
+enum AbortCode {
+    OTHER = 0;
+    RATE_LIMITED = 1;
+    RESTARTED = 2;
+}
+
+enum KeyType {
+    READ = 0;
+    WRITE = 1;
+}
+
+message MasterMetadata {
+    uint32 master = 1;
+    uint32 counter = 2;
+}
+
+message ValueEntry {
+    bytes value = 1;
+    bytes new_value = 2;
+    KeyType type = 3;
+    oneof optional {
+        MasterMetadata metadata = 4;
+    }
+}
+
+message KeyValueEntry {
+    bytes key = 1;
+    ValueEntry value_entry = 2;
+}
+
+enum TransactionEvent {
+    ALL = 0; // Special value used to select all events
+    ENTER_SERVER = 1;
+    EXIT_SERVER_TO_FORWARDER = 2;
+    ENTER_FORWARDER = 3;
+    EXIT_FORWARDER_TO_SEQUENCER = 4;
+    EXIT_FORWARDER_TO_MULTI_HOME_ORDERER = 5;
+    ENTER_MULTI_HOME_ORDERER = 6;
+    ENTER_MULTI_HOME_ORDERER_IN_BATCH = 7;
+    EXIT_MULTI_HOME_ORDERER_IN_BATCH = 8;
+    EXIT_MULTI_HOME_ORDERER = 9;
+    ENTER_SEQUENCER = 10;
+    // This is not an actual event, but used for storing extra information
+    EXPECTED_WAIT_TIME_UNTIL_ENTER_LOCAL_BATCH = 11;
+    ENTER_LOCAL_BATCH = 12;
+    ENTER_SEQUENCER_IN_BATCH = 13;
+    EXIT_SEQUENCER_IN_BATCH = 14;
+    ENTER_LOG_MANAGER_IN_BATCH = 15;
+    ENTER_LOG_MANAGER_ORDER = 16;
+    EXIT_LOG_MANAGER = 17;
+    ENTER_SCHEDULER = 18;
+    ENTER_SCHEDULER_LO = 19;
+    ENTER_LOCK_MANAGER = 20;
+    DEADLOCK_DETECTED = 21;
+    DISPATCHED = 22;
+    DISPATCHED_FAST = 23;
+    DISPATCHED_SLOW = 24;
+    DISPATCHED_SLOW_DEADLOCKED = 25;
+    ENTER_WORKER = 26;
+    GOT_REMOTE_READS = 27;
+    GOT_REMOTE_READS_DEADLOCKED = 28;
+    EXIT_WORKER = 29;
+    RETURN_TO_SERVER = 30;
+    EXIT_SERVER_TO_CLIENT = 31;
+    // Ziplog specific events
+    ENTER_STUB = 32;
+    EXIT_STUB = 33;
+    EXIT_STUB_TO_CLIENT = 34;
+    ENTER_GLOG = 35;
+    EXIT_GLOG = 36;
+    BROADCAST_READ = 37;
+    EXECUTE_TXN = 38;
+    ENTER_GLOG_ORDER = 39;
+
+    // Tiga Specific Event
+    ENTER_COORDINATOR = 40;
+    EXIT_COORDINATOR = 41;
+    ENTER_ACCEPTOR = 42;
+    EXIT_ACCEPTOR = 43;
+    DISPATCH_SPEC = 44;
+    DISPATCH_DEF = 45;
+    RELEASE_TRANSACTION = 46;
+
+}
+
+message TransactionEventInfo {
+    // Event name
+    TransactionEvent event = 1;
+    // When the event took place
+    int64 time = 2;
+    // Where the event took place
+    int32 machine = 3;
+    // Home of the LockOnlyTxn when the event took place
+    int32 home = 4;
+}
+
+message TransactionInternal {
+    // unique transaction id, multi-home and lock only
+    // txns share this id
+    uint64 id = 1;
+    TransactionType type = 2;
+    int32 home = 3;
+    uint32 coordinating_server = 4;
+    int64 timestamp = 5;
+    repeated uint32 involved_partitions = 6;
+    repeated uint32 active_partitions = 7;
+    repeated uint32 involved_regions = 8;
+
+    // for recording time of different events of txn
+    repeated TransactionEventInfo events = 9;
+
+    // These fields are in slog time
+    int64 mh_depart_from_coordinator_time = 10;
+    int64 mh_arrive_at_home_time = 11;
+    int64 mh_enter_local_batch_time = 12;
+
+    // positions in the global log
+    repeated int64 global_log_positions = 13;
+
+    // client id of the sender
+    uint64 client_id = 14;
+
+    // Ziplog noop flag
+    bool noop = 15;
+
+    // machine id of last transaction response
+    uint32 last_machine_id = 16;
+
+    uint32 last_remote_read = 17;
+
+    // Flag signifying if the transaction is one shot or not
+    bool is_one_shot_txn = 18;
+}
+
+message RemasterProcedure {
+    uint32 new_master = 1;
+    // The lock only for the new master will create a new key
+    bool is_new_master_lock_only = 2;
+}
+
+message Procedure {
+    // First element is always the name of the procedure
+    repeated bytes args = 1;
+}
+
+message Procedures {
+    repeated Procedure procedures = 1;
+}
+
+message Transaction {
+    TransactionInternal internal = 1;
+
+    oneof program {
+        /*
+        Procedures:
+        GET key1
+        SET key2 value2
+        DEL key4
+        COPY key1 key3
+        */
+        Procedures code = 2;
+        /*
+        Remaster transactions will move the keys in the write_set to the new master.
+        MasterMetadata must still be correct for the keys.
+        */
+        RemasterProcedure remaster = 3;
+    } 
+
+    repeated KeyValueEntry keys = 4;
+    repeated bytes deleted_keys = 5;
+
+    TransactionStatus status = 6;
+    AbortCode abort_code = 7;
+    string abort_reason = 8;
+    int64 ordering_overhead = 9;
+}
+
+message Batch {
+    uint64 id = 1;
+    repeated Transaction transactions = 2;
+    // All txns in this batch has this same type.
+    // Can either be SINGLE_HOME or MULTI_HOME.
+    // LOCK_ONLY txns are also considered SINGLE_HOME.
+    TransactionType transaction_type = 3;
+    // For recording the event time for all
+    // transactions in this batch simultaneously
+    repeated TransactionEventInfo events = 4;
+    // Timestamp when the batch was sent for ordering
+    uint64 ordering_sent = 5;
+    // Timestamp when the ordering arrived
+    uint64 ordering_arrival = 6;
+    // Originating home of the batch
+    int32 home = 7;
+    // Time of insertion into the log
+    uint64 log_insertion = 8;
+    // Slot position when inserted
+    int64 gsn_at_insertion = 9;
+}

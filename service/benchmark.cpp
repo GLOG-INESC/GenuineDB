@@ -1,0 +1,473 @@
+#include <algorithm>
+#include <chrono>
+#include <iomanip>
+#include <iostream>
+#include <optional>
+#include <random>
+#include <unordered_map>
+
+#include "common/configuration.h"
+#include "common/csv_writer.h"
+#include "common/metrics.h"
+#include "common/proto_utils.h"
+#include "common/string_utils.h"
+#include "execution/tpcc/metadata_initializer.h"
+#include "module/txn_generator.h"
+#include "service/service_utils.h"
+#include "storage/metadata_initializer.h"
+#include "workload/basic.h"
+#include "workload/remastering.h"
+#include "workload/tpcc.h"
+#include "workload/skewed.h"
+#include "workload/unique.h"
+#include "workload/ycsb.h"
+
+DEFINE_string(config, "slog.conf", "Path to the configuration file");
+DEFINE_int32(generators, 1, "Number of generator threads");
+DEFINE_uint32(region, 0, "The region associated to current client");
+DEFINE_uint32(replica, 0, "The client associated to the current client");
+DEFINE_string(data_dir, "", "Directory containing intial data");
+DEFINE_string(out_dir, "", "Directory containing output data");
+DEFINE_int32(rate, 0, "Maximum number of transactions sent per second.");
+DEFINE_int32(clients, 0, "Number of concurrent client. If set to 0, the txn are sent at a constant rate");
+DEFINE_int32(duration, 0, "Maximum duration in seconds to run the benchmark");
+DEFINE_uint32(txns, 100, "Total number of txns to be generated");
+DEFINE_string(wl, "basic", "Name of the workload to use (options: basic, skewed, cockroach, remastering)");
+DEFINE_string(params, "", "Parameters of the workload");
+DEFINE_bool(dry_run, false, "Generate the transactions without actually sending to the server");
+DEFINE_double(sample, 10, "Percent of sampled transactions to be written to result files");
+DEFINE_int32(min_sample, 25000, "Minimum number of samples");
+DEFINE_double(event_sample, 10, "Percent of transaction events to be written to result files");
+
+DEFINE_int32(
+    seed, -1,
+    "Seed for any randomization in the benchmark. If set to negative, seed will be picked from std::random_device()");
+DEFINE_bool(txn_profiles, false, "Output transaction profiles");
+
+using namespace slog;
+
+using std::count_if;
+using std::make_unique;
+using std::setw;
+using std::unique_ptr;
+using std::chrono::duration_cast;
+using std::make_shared;
+
+uint32_t seed = std::random_device{}();
+zmq::context_t context;
+
+vector<unique_ptr<ModuleRunner>> InitializeGenerators(const MetricsRepositoryManagerPtr& metrics_manager) {
+  // Load the config
+  auto config = Configuration::FromFile(FLAGS_config, "");
+
+  // Setup zmq context
+  context.set(zmq::ctxopt::blocky, false);
+  const auto kTestModuleTimeout = std::chrono::milliseconds(5);
+  auto broker = Broker::New(config, kTestModuleTimeout);
+
+  // Initialize the generators
+  FLAGS_generators = std::max(FLAGS_generators, 1);
+  auto remaining_txns = FLAGS_txns;
+  auto num_txns_per_generator = FLAGS_txns / FLAGS_generators;
+  vector<std::unique_ptr<ModuleRunner>> generators;
+  auto rate_limiter = std::make_shared<RateLimiter>(FLAGS_rate);
+  std::shared_ptr<MetadataInitializer> metadata_initializer;
+
+  // Identify the metadata initializer
+  switch (config->proto_config().partitioning_case()) {
+    case internal::Configuration::kSimplePartitioning:
+      metadata_initializer = make_shared<SimpleMetadataInitializer>(config->num_regions(), config->num_partitions());
+      break;
+    case internal::Configuration::kSimplePartitioning2:
+      metadata_initializer = make_shared<SimpleMetadataInitializer2>(config->num_regions(), config->num_partitions());
+      break;
+    case internal::Configuration::kTpccPartitioning:
+      metadata_initializer =
+          make_shared<tpcc::TPCCMetadataInitializer>(config->num_regions(), config->num_partitions(), config->local_region());
+      break;
+    default:
+      metadata_initializer = make_shared<ConstantMetadataInitializer>(0);
+      break;
+  }
+  std::shared_ptr<ZipfDistribution> zipf_dist;
+  zipf_dist.reset(new ZipfDistribution());
+  // Precompute once the Zipfian calculations
+  for (int i = 0; i < FLAGS_generators; i++) {
+    // Select the workload
+    unique_ptr<Workload> workload;
+    if (FLAGS_wl == "basic") {
+      workload =
+          make_unique<BasicWorkload>(config, FLAGS_region, FLAGS_replica, FLAGS_data_dir, FLAGS_params, seed + i);
+    } else if (FLAGS_wl == "skewed"){
+      workload =
+          make_unique<SkewedWorkload>(config, FLAGS_region, FLAGS_replica, FLAGS_data_dir, FLAGS_params, seed + i);
+    } else if (FLAGS_wl == "unique"){
+      workload =
+          make_unique<UniqueWorkload>(config, FLAGS_region, FLAGS_replica, FLAGS_data_dir, FLAGS_params, FLAGS_generators, i, FLAGS_clients/FLAGS_generators);
+    }
+    else if (FLAGS_wl == "remastering") {
+      workload =
+          make_unique<RemasteringWorkload>(config, FLAGS_region, FLAGS_replica, FLAGS_data_dir, FLAGS_params, seed + i);
+    } else if (FLAGS_wl == "tpcc") {
+      workload = make_unique<TPCCWorkload>(config, FLAGS_region, FLAGS_replica, FLAGS_params,
+                                           std::make_pair(i + 1, FLAGS_generators), seed + i);
+    } else if (FLAGS_wl == "ycsb") {
+      workload = make_unique<YCSBWorkload>(config, FLAGS_region, FLAGS_replica, FLAGS_data_dir, FLAGS_params, zipf_dist, seed + i);
+    }
+    else {
+      LOG(FATAL) << "Unknown workload: " << FLAGS_wl;
+    }
+    if (i < FLAGS_generators - 1) {
+      remaining_txns -= num_txns_per_generator;
+    } else {
+      num_txns_per_generator = remaining_txns;
+    }
+
+
+    if (FLAGS_clients > 0) {
+      int num_clients = FLAGS_clients / FLAGS_generators + (i < (FLAGS_clients % FLAGS_generators));
+      generators.push_back(MakeRunnerFor<SynchronousTxnGenerator>(config, context, std::move(workload), FLAGS_region,
+                                                                  FLAGS_replica, num_txns_per_generator, num_clients,
+                                                                  FLAGS_duration, rate_limiter, FLAGS_dry_run));
+
+    } else {
+      generators.push_back(MakeRunnerFor<ConstantRateTxnGenerator>(config, context, std::move(workload), FLAGS_region,
+                                                                   FLAGS_replica, num_txns_per_generator,
+                                                                   FLAGS_duration, rate_limiter, FLAGS_dry_run));
+    }
+  }
+  return generators;
+}
+
+void RunBenchmark(vector<unique_ptr<ModuleRunner>>& generators) {
+  // Block SIGINT from here so that the new threads inherit the block mask
+  sigset_t signal_set;
+  sigemptyset(&signal_set);
+  sigaddset(&signal_set, SIGINT);
+  pthread_sigmask(SIG_BLOCK, &signal_set, nullptr);
+
+  // Run the generators
+  for (auto& w : generators) {
+    w->StartInNewThread();
+  }
+
+  // Wait until all generators finish the setting up phase
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    bool setup = true;
+    for (const auto& w : generators) setup &= w->set_up();
+    if (setup) break;
+  }
+
+  // Status report until all generators finish running
+  size_t last_num_sent_txns = 0;
+  size_t last_num_committed_txns = 0;
+  size_t last_num_aborted_txns = 0;
+  size_t last_num_restarted_txns = 0;
+  auto last_print_time = std::chrono::steady_clock::now();
+  timespec sigpoll_time = {.tv_sec = 0, .tv_nsec = 0};
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    bool running = false;
+    size_t num_sent_txns = 0;
+    size_t num_committed_txns = 0;
+    size_t num_aborted_txns = 0;
+    size_t num_restarted_txns = 0;
+    for (auto& w : generators) {
+      running |= w->is_running();
+      auto gen = dynamic_cast<const TxnGenerator*>(w->module().get());
+      num_sent_txns += gen->sent_txns();
+      num_committed_txns += gen->committed_txns();
+      num_aborted_txns += gen->aborted_txns();
+      num_restarted_txns += gen->restarted_txns();
+    }
+    auto now = std::chrono::steady_clock::now();
+    auto t = duration_cast<std::chrono::milliseconds>(now - last_print_time);
+    auto send_tps = (num_sent_txns - last_num_sent_txns) * 1000 / t.count();
+    auto commit_tps = (num_committed_txns - last_num_committed_txns) * 1000 / t.count();
+    auto abort_tps = (num_aborted_txns - last_num_aborted_txns) * 1000 / t.count();
+    auto restart_tps = (num_restarted_txns - last_num_restarted_txns) * 1000 / t.count();
+
+    // Effectively skip the first log since it is usually inaccurate.
+    if (last_num_sent_txns > 0) {
+      LOG(INFO) << "S: " << send_tps << " (" << num_sent_txns << ")"
+                << "; C: " << commit_tps << " (" << num_committed_txns << ")"
+                << "; A: " << abort_tps << " (" << num_aborted_txns << ")"
+                << "; R: " << restart_tps << " (" << num_restarted_txns << ")";
+    }
+
+    last_num_sent_txns = num_sent_txns;
+    last_num_committed_txns = num_committed_txns;
+    last_num_aborted_txns = num_aborted_txns;
+    last_num_restarted_txns = num_restarted_txns;
+    last_print_time = now;
+
+    if (!running) {
+      break;
+    }
+
+    if (sigtimedwait(&signal_set, nullptr, &sigpoll_time) >= 0) {
+      LOG(WARNING) << "Benchmark interuptted. Partial results collected.";
+      break;
+    }
+  }
+}
+
+struct ResultWriters {
+  const vector<string> kTxnColumns = {"txn_id",   "coordinator",    "regions", "partitions", "generator",
+                                      "restarts", "global_log_pos", "sent_at", "received_at", "last_machine", "orig_region",
+                                      "last_remote_read_machine", "is_rw", "is_2fi"};
+  const vector<string> kEventsColumns = {"txn_id", "event", "time", "machine", "home"};
+  const vector<string> kSummaryColumns = {"committed",   "aborted",     "not_started",      "restarted",
+                                          "single_home", "multi_home",  "single_partition", "multi_partition",
+                                          "remaster", "rw", "2fi",  "elapsed_time", "start_time"};
+
+  const vector<string> kBlockingTxns = {"txn_id", "holder_txns", "queue_txns"};
+
+  ResultWriters()
+      : txns(FLAGS_out_dir + "/transactions.csv", kTxnColumns),
+        events(FLAGS_out_dir + "/txn_events.csv", kEventsColumns),
+        summary(FLAGS_out_dir + "/summary.csv", kSummaryColumns),
+        blocking_txns(FLAGS_out_dir + "/blocking_txns.csv", kBlockingTxns){}
+
+  CSVWriter txns;
+  CSVWriter events;
+  CSVWriter summary;
+  CSVWriter blocking_txns;
+
+};
+std::optional<ResultWriters> writers;
+
+struct GeneratorSummary {
+  int committed = 0;
+  int aborted = 0;
+  int not_started = 0;
+  int restarted = 0;
+  int single_home = 0;
+  int multi_home = 0;
+  int single_partition = 0;
+  int multi_partition = 0;
+  int remaster = 0;
+  int rw = 0;
+  int is_2fi = 0;
+  uint64_t start_time = 0;
+
+  GeneratorSummary& operator+(const GeneratorSummary& other) {
+    committed += other.committed;
+    aborted += other.aborted;
+    not_started += other.not_started;
+    restarted += other.restarted;
+    single_home += other.single_home;
+    multi_home += other.multi_home;
+    single_partition += other.single_partition;
+    multi_partition += other.multi_partition;
+    remaster += other.remaster;
+    rw += other.rw;
+    is_2fi += other.is_2fi;
+
+    return *this;
+  }
+
+  GeneratorSummary& operator+(const TxnGenerator::TxnInfo& info) {
+    committed += info.txn->status() == TransactionStatus::COMMITTED;
+    aborted += info.txn->status() == TransactionStatus::ABORTED;
+    not_started += info.txn->status() == TransactionStatus::NOT_STARTED;
+    restarted += info.restarts > 0;
+    single_home += info.txn->internal().type() == TransactionType::SINGLE_HOME;
+    multi_home += info.txn->internal().type() == TransactionType::MULTI_HOME_OR_LOCK_ONLY;
+    single_partition += info.txn->internal().involved_partitions_size() == 1;
+    multi_partition += info.txn->internal().involved_partitions_size() > 1;
+    remaster += info.txn->program_case() == Transaction::ProgramCase::kRemaster;
+    is_2fi += info.txn->internal().is_one_shot_txn() == false;
+    rw += info.txn->internal().active_partitions_size() > 0;
+    return *this;
+  }
+
+  template <typename T>
+  GeneratorSummary& operator+=(const T& other) {
+    return *this + other;
+  }
+};
+
+CSVWriter& operator<<(CSVWriter& csv, const GeneratorSummary& s) {
+  csv << s.committed << s.aborted << s.not_started << s.restarted << s.single_home << s.multi_home << s.single_partition
+      << s.multi_partition << s.remaster << s.rw << s.is_2fi;
+  return csv;
+}
+
+void WriteMetadata(const Workload& workload) {
+  vector<string> columns{"region", "duration", "txns", "clients", "rate", "sample", "wl:name"};
+  const auto& param_keys = workload.params().param_keys();
+  for (const auto& k : param_keys) {
+    columns.push_back("wl:" + k);
+  }
+
+  CSVWriter metadata_json(FLAGS_out_dir + "/metadata.csv", columns);
+  metadata_json << FLAGS_region << FLAGS_duration << FLAGS_txns << FLAGS_clients << FLAGS_rate << FLAGS_sample << workload.name();
+  for (const auto& k : param_keys) {
+    metadata_json << workload.params().GetString(k);
+  }
+  metadata_json << csvendl;
+}
+
+void WriteResults(const vector<unique_ptr<ModuleRunner>>& generators, uint64_t start_time) {
+  if (!writers.has_value()) {
+    return;
+  }
+
+  // Write metadata
+  CHECK(!generators.empty());
+  auto generator = dynamic_cast<const TxnGenerator*>(generators.front()->module().get());
+  WriteMetadata(generator->workload());
+
+  // Aggregate complete data and output summary
+  for (auto& w : generators) {
+    GeneratorSummary summary;
+    auto generator = dynamic_cast<const TxnGenerator*>(w->module().get());
+    const auto& txn_infos = generator->txn_infos();
+    for (auto info : txn_infos) {
+      summary += info;
+    }
+    writers->summary << summary << generator->elapsed_time().count() << start_time << csvendl;
+
+    // Write statistics for Ziplog client stubs
+
+  }
+
+  // Sample a subset of the result
+  vector<TxnGenerator::TxnInfo> txn_infos;
+  for (auto& w : generators) {
+    auto gen = dynamic_cast<const TxnGenerator*>(w->module().get());
+    txn_infos.insert(txn_infos.end(), gen->txn_infos().begin(), gen->txn_infos().end());
+  }
+  std::mt19937 rg(seed);
+  std::shuffle(txn_infos.begin(), txn_infos.end(), rg);
+  auto sample_size =
+      std::max(static_cast<size_t>(txn_infos.size() * FLAGS_sample / 100), static_cast<size_t>(FLAGS_min_sample));
+  txn_infos.resize(std::min(sample_size, txn_infos.size()));
+
+  auto event_sample_size = static_cast<size_t>(txn_infos.size() * FLAGS_event_sample / 100);
+  LOG(INFO) << "EVENT SAMPLE SIZE: " << event_sample_size;
+
+  unsigned long processed_txns = 0;
+
+  for (const auto& info : txn_infos) {
+    CHECK(info.txn != nullptr);
+    auto& txn_internal = info.txn->internal();
+    string involved_regions, involved_partitions, global_log_pos;
+    if (FLAGS_dry_run) {
+      involved_regions = Join(info.profile.involved_regions());
+      involved_partitions = Join(info.profile.involved_partitions());
+    } else {
+      involved_regions = Join(txn_internal.involved_regions());
+      involved_partitions = Join(txn_internal.involved_partitions());
+      global_log_pos = Join(txn_internal.global_log_positions());
+    }
+
+    if (info.recv_at.time_since_epoch().count() != 0){
+      writers->txns << txn_internal.id() << txn_internal.coordinating_server() << involved_regions << involved_partitions
+                    << info.client_id << info.restarts << global_log_pos << info.sent_at.time_since_epoch().count()
+                    << info.recv_at.time_since_epoch().count() << txn_internal.last_machine_id() << FLAGS_region << txn_internal.last_remote_read()
+                    << info.profile.is_rw << info.profile.is_2fi << csvendl;
+
+      if (processed_txns++ < event_sample_size){
+        for (auto& e : txn_internal.events()) {
+          writers->events << txn_internal.id() << ENUM_NAME(e.event(), TransactionEvent) << e.time() << e.machine()
+                          << e.home() << csvendl;
+        }
+      }
+    }
+
+  }
+
+  if (FLAGS_txn_profiles) {
+    auto file_name = FLAGS_out_dir + "/txn_profiles.txt";
+    std::ofstream profiles(file_name, std::ios::out);
+    if (!profiles) {
+      throw std::runtime_error(std::string("Cannot open file: ") + file_name);
+    }
+    const int kCellWidth = 12;
+    for (const auto& info : txn_infos) {
+      profiles << *info.txn;
+      profiles << "Multi-Home: " << info.profile.is_multi_home << "\n";
+      profiles << "Multi-Partition: " << info.profile.is_multi_partition << "\n";
+      profiles << "Profile:\n";
+      profiles << setw(kCellWidth) << "Key" << setw(kCellWidth) << "Home" << setw(kCellWidth) << "Partition"
+               << setw(kCellWidth) << "Hot" << setw(kCellWidth) << "Write"
+               << "\n";
+      for (const auto& [key, record] : info.profile.records) {
+        profiles << setw(kCellWidth) << key << setw(kCellWidth) << record.home << setw(kCellWidth) << record.partition
+                 << setw(kCellWidth) << record.is_hot << setw(kCellWidth) << record.is_write << "\n";
+      }
+      profiles << "\n" << std::endl;
+    }
+  }
+
+  LOG(INFO) << "Results were written to \"" << FLAGS_out_dir << "/\"";
+}
+
+int main(int argc, char* argv[]) {
+  InitializeService(&argc, &argv);
+
+  if (FLAGS_seed >= 0) {
+    seed = FLAGS_seed;
+  }
+
+  if (FLAGS_dry_run) {
+    LOG(WARNING) << "Generating transactions without sending to servers";
+  }
+
+  CHECK(FLAGS_clients > 0 || FLAGS_rate > 0) << "Either 'clients' or 'rate' must be set";
+
+  LOG(INFO) << "Arguments:\n"
+            << "Workload: " << FLAGS_wl << "\nParams: " << FLAGS_params << "\nNum txns: " << FLAGS_txns
+            << "\nSending rate: " << FLAGS_rate << "\nNum clients: " << FLAGS_clients
+            << "\nDuration: " << FLAGS_duration;
+
+  if (FLAGS_out_dir.empty()) {
+    LOG(WARNING) << "Results will not be written to files because output directory is not provided";
+  } else {
+    LOG(INFO) << "Results will be written to \"" << FLAGS_out_dir << "/\"";
+    writers.emplace();
+  }
+
+  auto config = Configuration::FromFile(FLAGS_config, "");
+  INIT_RECORDING(config);
+
+  auto config_name = FLAGS_config;
+  if (auto pos = config_name.rfind('/'); pos != std::string::npos) {
+    config_name = config_name.substr(pos + 1);
+  }
+  auto metrics_manager = make_shared<slog::MetricsRepositoryManager>(config_name, config);
+
+  auto generators = InitializeGenerators(metrics_manager);
+  auto start_time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+
+  RunBenchmark(generators);
+
+  WriteResults(generators, start_time);
+
+  float avg_tps = 0;
+  GeneratorSummary summary;
+  for (auto& w : generators) {
+    auto generator = dynamic_cast<const TxnGenerator*>(w->module().get());
+    const auto& txn_infos = generator->txn_infos();
+    int prev_committed = summary.committed;
+    for (auto info : txn_infos) {
+      summary += info;
+    }
+    auto elapsed_time = static_cast<float>(generator->elapsed_time().count()) / 1000000000;
+    avg_tps += (summary.committed - prev_committed) / elapsed_time;
+  }
+
+  LOG(INFO) << "Summary:\n"
+            << "Avg. TPS: " << std::floor(avg_tps) << "\nAborted: " << summary.aborted
+            << "\nCommitted: " << summary.committed << "\nNot started: " << summary.not_started
+            << "\nRestarted: " << summary.restarted << "\nSingle-home: " << summary.single_home
+            << "\nMulti-home: " << summary.multi_home << "\nSingle-partition: " << summary.single_partition
+            << "\nMulti-partition: " << summary.multi_partition << "\nRemaster: " << summary.remaster;
+
+  google::protobuf::ShutdownProtobufLibrary();
+  return 0;
+}

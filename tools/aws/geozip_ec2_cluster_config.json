@@ -1,0 +1,95 @@
+{
+    "configs": {
+        "InstanceType": "r5.4xlarge",
+        "ZipOrderedRegion": "us-east-1"
+    },
+    "default": {
+        "TargetCapacitySpecification": {
+            "TotalTargetCapacity": 2,
+            "OnDemandTargetCapacity": 2,
+            "SpotTargetCapacity": 0,
+            "DefaultTargetCapacityType": "on-demand"
+        },
+        "Type": "request"
+    },
+    "us-east-1": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-0aae5b39fc3d4de77",
+                    "Version": "2"
+                }
+            }
+        ]
+    },
+    "us-east-2": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-063faa965288e29a1",
+                    "Version": "2"
+                }
+            }
+        ]
+    },
+    "eu-west-1": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-029cee04bfbe63b70",
+                    "Version": "2"
+                }
+            }
+        ]
+    },
+    "eu-west-2": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-0c29697726404b124",
+                    "Version": "2"
+                }
+            }
+        ]
+    },
+    "ap-northeast-1": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-005dc1855250ccc72",
+                    "Version": "2"
+                }
+            }
+        ]
+    },
+    "ap-northeast-2": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-01ed0c1bcbdbd8dc1",
+                    "Version": "2"
+                }
+            }
+        ]
+    },
+    "ap-southeast-1": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-07a100fc9f6692e76",
+                    "Version": "2"
+                }
+            }
+        ]
+    },
+    "ap-southeast-2": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-0af5219f0165cb63d",
+                    "Version": "2"
+                }
+            }
+        ]
+    }
+}

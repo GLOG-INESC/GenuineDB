@@ -1,0 +1,35 @@
+{
+    "configs": {
+        "InstanceType": "r5.4xlarge",
+        "ZipOrderedRegion": "us-east-1"
+    },
+    "default": {
+        "TargetCapacitySpecification": {
+            "TotalTargetCapacity": 2,
+            "OnDemandTargetCapacity": 2,
+            "SpotTargetCapacity": 0,
+            "DefaultTargetCapacityType": "on-demand"
+        },
+        "Type": "request"
+    },
+    "us-east-1": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-0aae5b39fc3d4de77",
+                    "Version": "2"
+                }
+            }
+        ]
+    },
+    "us-east-2": {
+        "LaunchTemplateConfigs" : [
+            {
+                "LaunchTemplateSpecification": {
+                    "LaunchTemplateId": "lt-063faa965288e29a1",
+                    "Version": "2"
+                }
+            }
+        ]
+    }
+}

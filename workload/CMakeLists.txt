@@ -1,0 +1,16 @@
+target_sources(slog-core
+  PRIVATE
+    basic.cpp
+    basic.h
+        unique.cpp
+        unique.h
+    skewed.cpp
+    skewed.h
+    remastering.cpp
+    remastering.h
+    tpcc.cpp
+    tpcc.h
+    workload.h
+distribution.h
+ycsb.h
+ycsb.cpp)

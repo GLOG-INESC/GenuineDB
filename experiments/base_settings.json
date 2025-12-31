@@ -1,0 +1,19 @@
+{
+  "region_name" : {
+    "machines" : [
+      ["public_ip", "private_ip"],
+      ["public_ip_2", "private_ip_2"]
+    ],
+    "shrink_mh_orderer": true,
+    "num_replicas": 1,
+    "num_clients": 1,
+    "network_delays": {
+      "region_name": 10,
+      "region_name_2": 20
+    }
+  },
+  "order": {
+    "public" : "public_ip",
+    "private": "private_ip"
+  }
+}
