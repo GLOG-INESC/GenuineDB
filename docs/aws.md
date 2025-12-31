@@ -41,7 +41,7 @@ Note - If the user wishes, it can select other EC2 regions by modifying the `REG
 After setting up the cross-region communication, the user must create a [Launch Template](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/create-launch-template.html) in each region.
 
 A key step in this process is the creation of an [Amazon Machine Image](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/AMIs.html) (or AMI). 
-You may create an AMI following [this guide](https://docs.aws.amazon.com/toolkit-for-visual-studio/latest/user-guide/tkv-create-ami-from-instance.html) and installing the required dependencies as instructed in the [How to Build](#how-to-build) section.
+You may create an AMI following [this guide](https://docs.aws.amazon.com/toolkit-for-visual-studio/latest/user-guide/tkv-create-ami-from-instance.html) and installing the required dependencies as instructed in the [How to Build](../README.md) section.
 Once an AMI is created in a single region, you may automatize the copying and creation of the templates in each region by running the script `tools/aws/ami_setup.sh`.
 
 You must modify the script's configuration to your own setup, most notably:

@@ -78,7 +78,7 @@ Where:
 - `<EXTENSIONS>`: Extensions to be added to the experiment. There are five key extensions:
   - `glog` : Extension to deploy the Coordinator module required by GenuineDB;
   - `network_delay` : Extension to emulate geo-distributed environment by applying the network delays described in the `base_settings.json`. Network emulation is done via Linux Traffic Controller, and thus requires sudo permissions on all machines. Furthermore, it requires users to specify which network device to apply the delays in the base settings.
-  - `aws` : Extension to deploy GenuineDB to a EC2 AWS Cluster. Further details on this extension will be provided in [AWS Deployment](#aws-deployment).
+  - `aws` : Extension to deploy GenuineDB to a EC2 AWS Cluster. Further details on this extension will be provided in [AWS Deployment](aws.md).
   - `clock_sync` : Extension to record clock synchronization accuracy during experiments.
 
 - `<PROCESSING_DIR>`: Directory containing the processed experimental statistics. Required to avoid disk overflows, as described later.
